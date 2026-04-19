@@ -1,37 +1,36 @@
 import { PrismaClient } from '@prisma/client';
+import OpenAI from 'openai';
 
 const prisma = new PrismaClient();
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
     const { messages, roomId } = await req.json();
     const userMessage = messages[messages.length - 1].content;
 
-    // Simpan pesan user
     await prisma.message.create({
       data: { roomId: parseInt(roomId), role: 'user', content: userMessage },
     });
 
-    // Panggil OpenRouter pake key lo
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer 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',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free',
-        messages: [
-          { role: 'system', content: 'Kamu adalah RainChat, AI gaul. Panggil user "Bang". Bahasa campuran Indonesia-Jaksel. Pakai kata "Anjay", "Gokil", "Gaskeun".' },
-          { role: 'user', content: userMessage },
-        ],
-      }),
+    const history = await prisma.message.findMany({
+      where: { roomId: parseInt(roomId) },
+      orderBy: { createdAt: 'asc' },
+      take: 20,
     });
 
-    const data = await response.json();
-    const aiMessage = data.choices[0].message.content;
+    const chatHistory = history.map(msg => ({ role: msg.role, content: msg.content }));
 
-    // Simpan jawaban AI
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'Kamu adalah RainChat, AI gaul. Panggil user "Bang".' },
+        ...chatHistory,
+      ],
+    });
+
+    const aiMessage = completion.choices[0].message.content;
+
     await prisma.message.create({
       data: { roomId: parseInt(roomId), role: 'assistant', content: aiMessage },
     });
@@ -39,7 +38,7 @@ export async function POST(req) {
     return Response.json({ message: aiMessage });
     
   } catch (error) {
-    console.error('Error:', error);
-    return Response.json({ message: 'Maaf bang, error nih. Coba lagi ya!' });
+    console.error(error);
+    return Response.json({ error: error.message }, { status: 500 });
   }
 }
